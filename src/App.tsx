@@ -76,8 +76,19 @@ const USERS = {
 
 export default function App() {
   const [user, setUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem('spotihermes_user');
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = localStorage.getItem('spotihermes_user');
+      if (!saved) return null;
+      const parsed = JSON.parse(saved);
+      // Validate structure to avoid issues with old/corrupted data
+      if (parsed && typeof parsed.username === 'string' && (parsed.role === 'admin' || parsed.role === 'user')) {
+        return parsed;
+      }
+      return null;
+    } catch (e) {
+      console.error('Error loading user from localStorage:', e);
+      return null;
+    }
   });
   const [songs, setSongs] = useState<Song[]>([]);
   const [currentSongId, setCurrentSongId] = useState<string | null>(null);
@@ -129,27 +140,42 @@ export default function App() {
     }
   }, [user]);
 
+  const [showPassword, setShowPassword] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
   const handleLogin = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const username = (formData.get('username') as string || '').trim();
-    const password = (formData.get('password') as string || '').trim();
+    setIsLoggingIn(true);
+    try {
+      const formData = new FormData(e.currentTarget);
+      const username = (formData.get('username') as string || '').trim();
+      const password = (formData.get('password') as string || '').trim();
 
-    console.log('Intentando login con:', username);
+      console.log('Login attempt:', { username });
 
-    const foundUser = Object.values(USERS).find(
-      (u) => u.username === username && u.password === password
-    );
+      const foundUser = Object.values(USERS).find(
+        (u) => u.username.toLowerCase() === username.toLowerCase() && u.password === password
+      );
 
-    if (foundUser) {
-      console.log('Login exitoso para:', foundUser.username);
-      const userData: User = { username: foundUser.username, role: foundUser.role };
-      setUser(userData);
-      localStorage.setItem('spotihermes_user', JSON.stringify(userData));
-      addToast(`¡Bienvenido, ${foundUser.username}!`, 'success');
-    } else {
-      console.warn('Login fallido para:', username);
-      addToast('Credenciales incorrectas', 'error');
+      if (foundUser) {
+        console.log('Login success:', foundUser.username);
+        const userData: User = { username: foundUser.username, role: foundUser.role };
+        setUser(userData);
+        try {
+          localStorage.setItem('spotihermes_user', JSON.stringify(userData));
+        } catch (storageErr) {
+          console.error('LocalStorage error:', storageErr);
+        }
+        addToast(`¡Bienvenido, ${foundUser.username}!`, 'success');
+      } else {
+        console.warn('Login failed: Invalid credentials');
+        addToast('Usuario o contraseña incorrectos', 'error');
+      }
+    } catch (err) {
+      console.error('Login error:', err);
+      addToast('Error al iniciar sesión', 'error');
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -313,20 +339,36 @@ export default function App() {
               <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30 ml-1 flex items-center gap-2">
                 <Lock size={10} /> Contraseña
               </label>
-              <input 
-                name="password"
-                type="password" 
-                required
-                className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-red-600/50 transition-all placeholder:text-white/20"
-                placeholder="••••••••"
-              />
+              <div className="relative">
+                <input 
+                  name="password"
+                  type={showPassword ? "text" : "password"} 
+                  required
+                  className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-red-600/50 transition-all placeholder:text-white/20"
+                  placeholder="••••••••"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-white/20 hover:text-white/40 transition-colors"
+                >
+                  {showPassword ? "Ocultar" : "Mostrar"}
+                </button>
+              </div>
             </div>
             <button 
               type="submit"
-              className="w-full bg-white text-black font-black py-5 rounded-2xl transition-all transform hover:scale-[1.02] active:scale-[0.95] shadow-xl mt-4 flex items-center justify-center gap-2"
+              disabled={isLoggingIn}
+              className="w-full bg-white text-black font-black py-5 rounded-2xl transition-all transform hover:scale-[1.02] active:scale-[0.95] shadow-xl mt-4 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <LogIn size={20} />
-              ENTRAR
+              {isLoggingIn ? (
+                <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <>
+                  <LogIn size={20} />
+                  ENTRAR
+                </>
+              )}
             </button>
           </form>
         </motion.div>
