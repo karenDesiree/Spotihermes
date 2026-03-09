@@ -1,0 +1,5 @@
+{
+  "name": "Spotihermes",
+  "description": "A personalized music player with admin controls for uploading and managing songs.",
+  "requestFramePermissions": []
+}
