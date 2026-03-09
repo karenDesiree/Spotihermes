@@ -132,19 +132,23 @@ export default function App() {
   const handleLogin = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    const username = formData.get('username') as string;
-    const password = formData.get('password') as string;
+    const username = (formData.get('username') as string || '').trim();
+    const password = (formData.get('password') as string || '').trim();
+
+    console.log('Intentando login con:', username);
 
     const foundUser = Object.values(USERS).find(
       (u) => u.username === username && u.password === password
     );
 
     if (foundUser) {
+      console.log('Login exitoso para:', foundUser.username);
       const userData: User = { username: foundUser.username, role: foundUser.role };
       setUser(userData);
       localStorage.setItem('spotihermes_user', JSON.stringify(userData));
       addToast(`¡Bienvenido, ${foundUser.username}!`, 'success');
     } else {
+      console.warn('Login fallido para:', username);
       addToast('Credenciales incorrectas', 'error');
     }
   };
@@ -247,7 +251,7 @@ export default function App() {
     }
   };
 
-  const playSong = (id: number) => {
+  const playSong = (id: string) => {
     setCurrentSongId(id);
     setIsPlaying(true);
     setTimeout(() => {
