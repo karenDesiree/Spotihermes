@@ -37,7 +37,8 @@ import {
 import { 
   ref, 
   uploadBytes, 
-  getDownloadURL
+  getDownloadURL,
+  deleteObject
 } from 'firebase/storage';
 
 const PenguinIcon = ({ size = 24, className = "" }: { size?: number, className?: string }) => (
@@ -76,7 +77,8 @@ const USERS = {
 
 export default function App() {
   useEffect(() => {
-    console.log("--- SPOTIHERMES VERSION: 2.0 (FIXED LOGIN) ---");
+    console.log("--- SPOTIHERMES VERSION: 2.1 (ROBUSTNESS UPDATE) ---");
+    console.log("Nota: Los errores de 'WebSocket closed' son normales en este entorno de desarrollo y pueden ignorarse.");
   }, []);
 
   const [user, setUser] = useState<User | null>(() => {
@@ -124,8 +126,11 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
+  const [isLoading, setIsLoading] = useState(true);
+
   useEffect(() => {
     if (user) {
+      setIsLoading(true);
       const q = query(collection(db, 'songs'), orderBy('createdAt', 'desc'));
       const unsubscribe = onSnapshot(q, (snapshot) => {
         const songsData = snapshot.docs.map(doc => ({
@@ -136,9 +141,11 @@ export default function App() {
         if (songsData.length > 0 && currentSongId === null) {
           setCurrentSongId(songsData[0].id);
         }
+        setIsLoading(false);
       }, (error) => {
         console.error("Firestore Error:", error);
         addToast("Error al cargar las canciones", "error");
+        setIsLoading(false);
       });
       return () => unsubscribe();
     }
@@ -149,6 +156,7 @@ export default function App() {
 
   const handleLogin = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    console.log("handleLogin called, preventing default...");
     setIsLoggingIn(true);
     try {
       const formData = new FormData(e.currentTarget);
@@ -257,10 +265,28 @@ export default function App() {
     try {
       const songToDelete = songs.find(s => s.id === id);
       if (songToDelete) {
-        // Optional: Delete files from storage too
-        // For simplicity and to avoid errors if URLs are external, we just delete the doc
+        // Delete audio from storage if it's a firebase storage URL
+        if (songToDelete.audioUrl.includes('firebasestorage.googleapis.com')) {
+          try {
+            const audioRef = ref(storage, songToDelete.audioUrl);
+            await deleteObject(audioRef);
+          } catch (e) {
+            console.warn("Could not delete audio file from storage", e);
+          }
+        }
+        
+        // Delete cover from storage if it's a firebase storage URL
+        if (songToDelete.coverUrl && songToDelete.coverUrl.includes('firebasestorage.googleapis.com')) {
+          try {
+            const coverRef = ref(storage, songToDelete.coverUrl);
+            await deleteObject(coverRef);
+          } catch (e) {
+            console.warn("Could not delete cover file from storage", e);
+          }
+        }
+
         await deleteDoc(doc(db, 'songs', id));
-        addToast('Canción eliminada', 'success');
+        addToast('Canción eliminada permanentemente', 'success');
       }
     } catch (err) {
       console.error('Error deleting song:', err);
@@ -326,7 +352,12 @@ export default function App() {
             <p className="text-white/40 text-sm mt-3 font-medium">Tu música, tu espacio</p>
           </div>
           
-          <form onSubmit={handleLogin} className="space-y-5">
+          <form 
+            onSubmit={handleLogin} 
+            action="#" 
+            method="POST"
+            className="space-y-5"
+          >
             <div className="space-y-2">
               <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30 ml-1 flex items-center gap-2">
                 <UserIcon size={10} /> Usuario
@@ -438,29 +469,36 @@ export default function App() {
               <div className="text-[10px] font-bold text-white/30 uppercase tracking-widest">{songs.length} CANCIONES</div>
             </div>
             <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
-                  {songs.map((song) => (
-                    <div 
-                      key={song.id}
-                      onClick={() => playSong(song.id)}
-                      className={`group flex items-center gap-4 p-3 rounded-2xl cursor-pointer transition-all ${
-                        currentSongId === song.id ? 'bg-red-600/20 border border-red-600/20' : 'hover:bg-white/5 border border-transparent'
-                      }`}
-                    >
-                      <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-white/5">
-                        {song.coverUrl ? <img src={song.coverUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" /> : <Music className="w-full h-full p-3 opacity-20" />}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <h3 className={`font-bold truncate text-sm ${currentSongId === song.id ? 'text-red-400' : ''}`}>{song.title}</h3>
-                        <p className="text-[10px] font-bold text-white/40 truncate">{song.artist}</p>
-                      </div>
-                  {user.role === 'admin' && (
-                    <div className="flex gap-1 opacity-0 group-hover:opacity-100">
-                      <button onClick={(e) => { e.stopPropagation(); setEditingSong(song); setIsAdminModalOpen(true); }} className="p-1.5 hover:bg-white/10 rounded-full"><Edit2 size={12} /></button>
-                      <button onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(song.id); }} className="p-1.5 hover:bg-red-500/20 rounded-full text-red-400"><Trash2 size={12} /></button>
-                    </div>
-                  )}
+              {isLoading ? (
+                <div className="flex flex-col items-center justify-center py-10 gap-3 opacity-20">
+                  <div className="w-8 h-8 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <p className="text-[10px] font-bold uppercase tracking-widest">Cargando biblioteca...</p>
                 </div>
-              ))}
+              ) : (
+                songs.map((song) => (
+                  <div 
+                    key={song.id}
+                    onClick={() => playSong(song.id)}
+                    className={`group flex items-center gap-4 p-3 rounded-2xl cursor-pointer transition-all ${
+                      currentSongId === song.id ? 'bg-red-600/20 border border-red-600/20' : 'hover:bg-white/5 border border-transparent'
+                    }`}
+                  >
+                    <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-white/5">
+                      {song.coverUrl ? <img src={song.coverUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" /> : <Music className="w-full h-full p-3 opacity-20" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className={`font-bold truncate text-sm ${currentSongId === song.id ? 'text-red-400' : ''}`}>{song.title}</h3>
+                      <p className="text-[10px] font-bold text-white/40 truncate">{song.artist}</p>
+                    </div>
+                    {user.role === 'admin' && (
+                      <div className="flex gap-1 opacity-0 group-hover:opacity-100">
+                        <button onClick={(e) => { e.stopPropagation(); setEditingSong(song); setIsAdminModalOpen(true); }} className="p-1.5 hover:bg-white/10 rounded-full"><Edit2 size={12} /></button>
+                        <button onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(song.id); }} className="p-1.5 hover:bg-red-500/20 rounded-full text-red-400"><Trash2 size={12} /></button>
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
             </div>
           </div>
 
@@ -482,7 +520,12 @@ export default function App() {
                   </div>
 
                   <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar pb-24">
-                    {songs.length === 0 ? (
+                    {isLoading ? (
+                      <div className="flex flex-col items-center justify-center py-20 gap-4 opacity-20">
+                        <div className="w-10 h-10 border-4 border-white border-t-transparent rounded-full animate-spin" />
+                        <p className="text-xs font-bold uppercase tracking-widest">Cargando biblioteca...</p>
+                      </div>
+                    ) : songs.length === 0 ? (
                       <div className="flex flex-col items-center justify-center py-20 text-white/20 border-2 border-dashed border-white/5 rounded-[2rem]">
                         <Music size={48} className="mb-4 opacity-20" />
                         <p className="font-medium">Sin música aún</p>
@@ -690,6 +733,12 @@ export default function App() {
         onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
         onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
         onEnded={nextSong}
+        onError={() => {
+          if (isPlaying) {
+            addToast("Error al reproducir esta canción. El archivo podría no estar disponible.", "error");
+            setIsPlaying(false);
+          }
+        }}
       />
 
       {/* Toast Notifications */}
