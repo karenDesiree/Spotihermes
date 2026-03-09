@@ -75,6 +75,10 @@ const USERS = {
 };
 
 export default function App() {
+  useEffect(() => {
+    console.log("--- SPOTIHERMES VERSION: 2.0 (FIXED LOGIN) ---");
+  }, []);
+
   const [user, setUser] = useState<User | null>(() => {
     try {
       const saved = localStorage.getItem('spotihermes_user');
