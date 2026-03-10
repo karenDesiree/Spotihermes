@@ -16,30 +16,10 @@ import {
   Mic2,
   AlertCircle,
   CheckCircle2,
-  Info,
-  LogIn,
-  Lock
+  Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { User, Song } from './types';
-import { db, storage } from './firebase';
-import { 
-  collection, 
-  onSnapshot, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  doc, 
-  query, 
-  orderBy,
-  serverTimestamp
-} from 'firebase/firestore';
-import { 
-  ref, 
-  uploadBytes, 
-  getDownloadURL,
-  deleteObject
-} from 'firebase/storage';
 
 const PenguinIcon = ({ size = 24, className = "" }: { size?: number, className?: string }) => (
   <svg 
@@ -70,49 +50,21 @@ const PenguinIcon = ({ size = 24, className = "" }: { size?: number, className?:
   </svg>
 );
 
-const USERS = {
-  admin: { username: "hermesherasme", password: "herasmehermes18", role: "admin" as const },
-  user: { username: "karendesiree", password: "1132026", role: "user" as const },
-};
-
 export default function App() {
-  useEffect(() => {
-    console.log("--- SPOTIHERMES VERSION: 2.1 (ROBUSTNESS UPDATE) ---");
-    console.log("Nota: Los errores de 'WebSocket closed' son normales en este entorno de desarrollo y pueden ignorarse.");
-  }, []);
-
   const [user, setUser] = useState<User | null>(() => {
-    try {
-      const saved = localStorage.getItem('spotihermes_user');
-      if (!saved) return null;
-      const parsed = JSON.parse(saved);
-      // Validate structure to avoid issues with old/corrupted data
-      if (parsed && typeof parsed.username === 'string' && (parsed.role === 'admin' || parsed.role === 'user')) {
-        return parsed;
-      }
-      return null;
-    } catch (e) {
-      console.error('Error loading user from localStorage:', e);
-      return null;
-    }
+    const saved = localStorage.getItem('spotihermes_user');
+    return saved ? JSON.parse(saved) : null;
   });
   const [songs, setSongs] = useState<Song[]>([]);
-  const [currentSongId, setCurrentSongId] = useState<string | null>(null);
+  const [currentSongId, setCurrentSongId] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [showLyrics, setShowLyrics] = useState(false);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [editingSong, setEditingSong] = useState<Song | null>(null);
   const [view, setView] = useState<'library' | 'player'>('library');
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
   
   const [toasts, setToasts] = useState<{ id: string, message: string, type: 'success' | 'error' | 'info' }[]>([]);
-
-  useEffect(() => {
-    const handleResize = () => setWindowWidth(window.innerWidth);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   const addToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = Math.random().toString(36).substring(2, 9);
@@ -126,68 +78,56 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
-  const [isLoading, setIsLoading] = useState(true);
-
   useEffect(() => {
     if (user) {
-      setIsLoading(true);
-      const q = query(collection(db, 'songs'), orderBy('createdAt', 'desc'));
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const songsData = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as Song[];
-        setSongs(songsData);
-        if (songsData.length > 0 && currentSongId === null) {
-          setCurrentSongId(songsData[0].id);
-        }
-        setIsLoading(false);
-      }, (error) => {
-        console.error("Firestore Error:", error);
-        addToast("Error al cargar las canciones", "error");
-        setIsLoading(false);
-      });
-      return () => unsubscribe();
+      fetchSongs();
     }
   }, [user]);
 
-  const [showPassword, setShowPassword] = useState(false);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  // Auto-switch to player view on mobile when playing starts
+  useEffect(() => {
+    if (isPlaying && window.innerWidth < 1024) {
+      setView('player');
+    }
+  }, [isPlaying]);
 
-  const handleLogin = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    console.log("handleLogin called, preventing default...");
-    setIsLoggingIn(true);
+  const fetchSongs = async () => {
     try {
-      const formData = new FormData(e.currentTarget);
-      const username = (formData.get('username') as string || '').trim();
-      const password = (formData.get('password') as string || '').trim();
-
-      console.log('Login attempt:', { username });
-
-      const foundUser = Object.values(USERS).find(
-        (u) => u.username.toLowerCase() === username.toLowerCase() && u.password === password
-      );
-
-      if (foundUser) {
-        console.log('Login success:', foundUser.username);
-        const userData: User = { username: foundUser.username, role: foundUser.role };
-        setUser(userData);
-        try {
-          localStorage.setItem('spotihermes_user', JSON.stringify(userData));
-        } catch (storageErr) {
-          console.error('LocalStorage error:', storageErr);
-        }
-        addToast(`¡Bienvenido, ${foundUser.username}!`, 'success');
-      } else {
-        console.warn('Login failed: Invalid credentials');
-        addToast('Usuario o contraseña incorrectos', 'error');
+      const res = await fetch('/api/songs');
+      const data = await res.json();
+      console.log('Songs fetched:', data);
+      setSongs(data);
+      // Set initial song if none selected
+      if (data.length > 0 && currentSongId === null) {
+        setCurrentSongId(data[0].id);
       }
     } catch (err) {
-      console.error('Login error:', err);
-      addToast('Error al iniciar sesión', 'error');
-    } finally {
-      setIsLoggingIn(false);
+      console.error('Error fetching songs:', err);
+    }
+  };
+
+  const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    const username = formData.get('username') as string;
+    const password = formData.get('password') as string;
+
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setUser(data.user);
+        localStorage.setItem('spotihermes_user', JSON.stringify(data.user));
+        addToast(`¡Bienvenido, ${data.user.username}!`, 'success');
+      } else {
+        addToast(data.message, 'error');
+      }
+    } catch (err) {
+      addToast('Error de conexión', 'error');
     }
   };
 
@@ -195,102 +135,52 @@ export default function App() {
     setUser(null);
     localStorage.removeItem('spotihermes_user');
     setIsPlaying(false);
-    addToast('Sesión cerrada', 'info');
   };
 
   const [isUploading, setIsUploading] = useState(false);
 
   const handleUpload = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (user?.role !== 'admin') return;
-    
     setIsUploading(true);
     const formData = new FormData(e.currentTarget);
-    const title = formData.get('title') as string;
-    const artist = formData.get('artist') as string;
-    const lyrics = formData.get('lyrics') as string;
-    const audioFile = formData.get('audio') as File;
-    const coverFile = formData.get('cover') as File;
+    const url = editingSong ? `/api/songs/${editingSong.id}` : '/api/songs';
+    const method = editingSong ? 'PUT' : 'POST';
 
     try {
-      let audioUrl = editingSong?.audioUrl || '';
-      let coverUrl = editingSong?.coverUrl || null;
-
-      // Upload audio if new file selected
-      if (audioFile && audioFile.size > 0) {
-        const audioStorageRef = ref(storage, `songs/${Date.now()}_${audioFile.name}`);
-        const uploadResult = await uploadBytes(audioStorageRef, audioFile);
-        audioUrl = await getDownloadURL(uploadResult.ref);
-      }
-
-      // Upload cover if new file selected
-      if (coverFile && coverFile.size > 0) {
-        const coverStorageRef = ref(storage, `covers/${Date.now()}_${coverFile.name}`);
-        const uploadResult = await uploadBytes(coverStorageRef, coverFile);
-        coverUrl = await getDownloadURL(uploadResult.ref);
-      }
-
-      const songData = {
-        title,
-        artist,
-        lyrics,
-        audioUrl,
-        coverUrl,
-        updatedAt: serverTimestamp(),
-      };
-
-      if (editingSong) {
-        await updateDoc(doc(db, 'songs', editingSong.id), songData);
-        addToast('Canción actualizada', 'success');
-      } else {
-        await addDoc(collection(db, 'songs'), {
-          ...songData,
-          createdAt: serverTimestamp(),
-          ownerId: 'admin'
-        });
-        addToast('Canción subida con éxito', 'success');
-      }
+      const res = await fetch(url, {
+        method,
+        body: formData,
+      });
       
-      setIsAdminModalOpen(false);
-      setEditingSong(null);
+      if (res.ok) {
+        await fetchSongs();
+        setIsAdminModalOpen(false);
+        setEditingSong(null);
+        addToast(editingSong ? 'Canción actualizada' : 'Canción subida con éxito', 'success');
+      } else {
+        const errorData = await res.json();
+        addToast(errorData.error || 'No se pudo subir la canción', 'error');
+      }
     } catch (err) {
       console.error('Error uploading song:', err);
-      addToast('Error al procesar la canción', 'error');
+      addToast('Error de conexión al intentar subir la canción', 'error');
     } finally {
       setIsUploading(false);
     }
   };
 
-  const deleteSong = async (id: string) => {
+  const deleteSong = async (id: number) => {
     try {
-      const songToDelete = songs.find(s => s.id === id);
-      if (songToDelete) {
-        // Delete audio from storage if it's a firebase storage URL
-        if (songToDelete.audioUrl.includes('firebasestorage.googleapis.com')) {
-          try {
-            const audioRef = ref(storage, songToDelete.audioUrl);
-            await deleteObject(audioRef);
-          } catch (e) {
-            console.warn("Could not delete audio file from storage", e);
-          }
-        }
-        
-        // Delete cover from storage if it's a firebase storage URL
-        if (songToDelete.coverUrl && songToDelete.coverUrl.includes('firebasestorage.googleapis.com')) {
-          try {
-            const coverRef = ref(storage, songToDelete.coverUrl);
-            await deleteObject(coverRef);
-          } catch (e) {
-            console.warn("Could not delete cover file from storage", e);
-          }
-        }
-
-        await deleteDoc(doc(db, 'songs', id));
-        addToast('Canción eliminada permanentemente', 'success');
+      const res = await fetch(`/api/songs/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        addToast('Canción eliminada', 'success');
+        fetchSongs();
+      } else {
+        addToast('Error al eliminar la canción', 'error');
       }
     } catch (err) {
       console.error('Error deleting song:', err);
-      addToast('Error al eliminar la canción', 'error');
+      addToast('Error de conexión', 'error');
     } finally {
       setDeleteConfirmId(null);
     }
@@ -307,7 +197,7 @@ export default function App() {
     }
   };
 
-  const playSong = (id: string) => {
+  const playSong = (id: number) => {
     setCurrentSongId(id);
     setIsPlaying(true);
     setTimeout(() => {
@@ -352,16 +242,9 @@ export default function App() {
             <p className="text-white/40 text-sm mt-3 font-medium">Tu música, tu espacio</p>
           </div>
           
-          <form 
-            onSubmit={handleLogin} 
-            action="#" 
-            method="POST"
-            className="space-y-5"
-          >
+          <form onSubmit={handleLogin} className="space-y-5">
             <div className="space-y-2">
-              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30 ml-1 flex items-center gap-2">
-                <UserIcon size={10} /> Usuario
-              </label>
+              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30 ml-1">Usuario</label>
               <input 
                 name="username"
                 type="text" 
@@ -371,39 +254,20 @@ export default function App() {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30 ml-1 flex items-center gap-2">
-                <Lock size={10} /> Contraseña
-              </label>
-              <div className="relative">
-                <input 
-                  name="password"
-                  type={showPassword ? "text" : "password"} 
-                  required
-                  className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-red-600/50 transition-all placeholder:text-white/20"
-                  placeholder="••••••••"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-white/20 hover:text-white/40 transition-colors"
-                >
-                  {showPassword ? "Ocultar" : "Mostrar"}
-                </button>
-              </div>
+              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30 ml-1">Contraseña</label>
+              <input 
+                name="password"
+                type="password" 
+                required
+                className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-red-600/50 transition-all placeholder:text-white/20"
+                placeholder="••••••••"
+              />
             </div>
             <button 
               type="submit"
-              disabled={isLoggingIn}
-              className="w-full bg-white text-black font-black py-5 rounded-2xl transition-all transform hover:scale-[1.02] active:scale-[0.95] shadow-xl mt-4 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full bg-white text-black font-black py-5 rounded-2xl transition-all transform hover:scale-[1.02] active:scale-[0.95] shadow-xl mt-4"
             >
-              {isLoggingIn ? (
-                <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin" />
-              ) : (
-                <>
-                  <LogIn size={20} />
-                  ENTRAR
-                </>
-              )}
+              ENTRAR
             </button>
           </form>
         </motion.div>
@@ -469,36 +333,29 @@ export default function App() {
               <div className="text-[10px] font-bold text-white/30 uppercase tracking-widest">{songs.length} CANCIONES</div>
             </div>
             <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
-              {isLoading ? (
-                <div className="flex flex-col items-center justify-center py-10 gap-3 opacity-20">
-                  <div className="w-8 h-8 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <p className="text-[10px] font-bold uppercase tracking-widest">Cargando biblioteca...</p>
-                </div>
-              ) : (
-                songs.map((song) => (
-                  <div 
-                    key={song.id}
-                    onClick={() => playSong(song.id)}
-                    className={`group flex items-center gap-4 p-3 rounded-2xl cursor-pointer transition-all ${
-                      currentSongId === song.id ? 'bg-red-600/20 border border-red-600/20' : 'hover:bg-white/5 border border-transparent'
-                    }`}
-                  >
-                    <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-white/5">
-                      {song.coverUrl ? <img src={song.coverUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" /> : <Music className="w-full h-full p-3 opacity-20" />}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <h3 className={`font-bold truncate text-sm ${currentSongId === song.id ? 'text-red-400' : ''}`}>{song.title}</h3>
-                      <p className="text-[10px] font-bold text-white/40 truncate">{song.artist}</p>
-                    </div>
-                    {user.role === 'admin' && (
-                      <div className="flex gap-1 opacity-0 group-hover:opacity-100">
-                        <button onClick={(e) => { e.stopPropagation(); setEditingSong(song); setIsAdminModalOpen(true); }} className="p-1.5 hover:bg-white/10 rounded-full"><Edit2 size={12} /></button>
-                        <button onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(song.id); }} className="p-1.5 hover:bg-red-500/20 rounded-full text-red-400"><Trash2 size={12} /></button>
+                  {songs.map((song) => (
+                    <div 
+                      key={song.id}
+                      onClick={() => playSong(song.id)}
+                      className={`group flex items-center gap-4 p-3 rounded-2xl cursor-pointer transition-all ${
+                        currentSongId === song.id ? 'bg-red-600/20 border border-red-600/20' : 'hover:bg-white/5 border border-transparent'
+                      }`}
+                    >
+                      <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-white/5">
+                        {song.coverUrl ? <img src={song.coverUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" /> : <Music className="w-full h-full p-3 opacity-20" />}
                       </div>
-                    )}
-                  </div>
-                ))
-              )}
+                      <div className="flex-1 min-w-0">
+                        <h3 className={`font-bold truncate text-sm ${currentSongId === song.id ? 'text-red-400' : ''}`}>{song.title}</h3>
+                        <p className="text-[10px] font-bold text-white/40 truncate">{song.artist}</p>
+                      </div>
+                  {user.role === 'admin' && (
+                    <div className="flex gap-1 opacity-0 group-hover:opacity-100">
+                      <button onClick={(e) => { e.stopPropagation(); setEditingSong(song); setIsAdminModalOpen(true); }} className="p-1.5 hover:bg-white/10 rounded-full"><Edit2 size={12} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(song.id); }} className="p-1.5 hover:bg-red-500/20 rounded-full text-red-400"><Trash2 size={12} /></button>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
 
@@ -520,12 +377,7 @@ export default function App() {
                   </div>
 
                   <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar pb-24">
-                    {isLoading ? (
-                      <div className="flex flex-col items-center justify-center py-20 gap-4 opacity-20">
-                        <div className="w-10 h-10 border-4 border-white border-t-transparent rounded-full animate-spin" />
-                        <p className="text-xs font-bold uppercase tracking-widest">Cargando biblioteca...</p>
-                      </div>
-                    ) : songs.length === 0 ? (
+                    {songs.length === 0 ? (
                       <div className="flex flex-col items-center justify-center py-20 text-white/20 border-2 border-dashed border-white/5 rounded-[2rem]">
                         <Music size={48} className="mb-4 opacity-20" />
                         <p className="font-medium">Sin música aún</p>
@@ -585,33 +437,31 @@ export default function App() {
               )}
 
               {/* Player View (Mobile Fullscreen or Desktop Main Area) */}
-              {(view === 'player' || windowWidth >= 1024) && (
+              {(view === 'player' || window.innerWidth >= 1024) && (
                 <motion.div 
                   key="player"
-                  initial={windowWidth < 1024 ? { opacity: 0, y: 40 } : { opacity: 0 }}
+                  initial={window.innerWidth < 1024 ? { opacity: 0, y: 40 } : { opacity: 0 }}
                   animate={{ opacity: 1, y: 0 }}
-                  exit={windowWidth < 1024 ? { opacity: 0, y: 40 } : { opacity: 0 }}
-                  className={`h-full flex flex-col p-6 lg:p-8 pt-4 ${windowWidth >= 1024 ? 'bg-white/5 backdrop-blur-md rounded-[2.5rem] border border-white/5' : ''}`}
+                  exit={window.innerWidth < 1024 ? { opacity: 0, y: 40 } : { opacity: 0 }}
+                  className={`h-full flex flex-col p-6 lg:p-8 pt-4 ${window.innerWidth >= 1024 ? 'bg-white/5 backdrop-blur-md rounded-[2.5rem] border border-white/5' : ''}`}
                 >
                   <div className="flex justify-between items-center mb-4 lg:mb-8">
                     <button onClick={() => setView('library')} className="lg:hidden w-10 h-10 bg-white/5 rounded-full flex items-center justify-center">
                       <ArrowLeft size={20} />
                     </button>
                     <div className="flex-1" />
-                    <div className="flex items-center gap-4">
-                      <button 
-                        onClick={() => setShowLyrics(!showLyrics)} 
-                        className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-                          showLyrics ? 'bg-red-600 text-white shadow-[0_0_15px_rgba(220,38,38,0.3)]' : 'bg-white/5 text-white/40 hover:bg-white/10'
-                        }`}
-                      >
-                        <Mic2 size={18} />
-                      </button>
-                    </div>
+                    <button 
+                      onClick={() => setShowLyrics(!showLyrics)} 
+                      className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${
+                        showLyrics ? 'bg-red-600 text-white shadow-[0_0_15px_rgba(220,38,38,0.3)]' : 'bg-white/5 text-white/40 hover:bg-white/10'
+                      }`}
+                    >
+                      <Mic2 size={18} />
+                    </button>
                   </div>
 
                   <div className="flex-1 flex flex-col items-center justify-center min-h-0">
-                    <div className="relative w-full aspect-square max-w-[260px] lg:max-w-[380px] mb-4 lg:mb-6 flex-shrink-0">
+                    <div className="relative w-full aspect-square max-w-[280px] lg:max-w-[420px] mb-6 lg:mb-8 flex-shrink-0">
                       <motion.div 
                         animate={{ 
                           rotate: isPlaying ? 360 : 0,
@@ -646,13 +496,13 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="w-full text-center mb-4 lg:mb-6 flex-shrink-0">
-                      <h2 className="text-2xl lg:text-3xl font-black tracking-tighter mb-1 truncate px-4">{currentSong?.title || "Sin selección"}</h2>
-                      <p className="text-sm lg:text-base font-bold text-white/40">{currentSong?.artist || "Selecciona una canción"}</p>
+                    <div className="w-full text-center mb-6 lg:mb-10 flex-shrink-0">
+                      <h2 className="text-2xl lg:text-4xl font-black tracking-tighter mb-1 truncate px-4">{currentSong?.title || "Sin selección"}</h2>
+                      <p className="text-sm lg:text-lg font-bold text-white/40">{currentSong?.artist || "Selecciona una canción"}</p>
                     </div>
 
-                    <div className="w-full space-y-4 lg:space-y-6 max-w-md flex-shrink-0">
-                      <div className="space-y-2 lg:space-y-2">
+                    <div className="w-full space-y-6 lg:space-y-8 max-w-md flex-shrink-0">
+                      <div className="space-y-2 lg:space-y-3">
                         <div className="relative w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
                           <motion.div 
                             className="absolute top-0 left-0 h-full bg-red-600"
@@ -727,19 +577,16 @@ export default function App() {
       </div>
 
       {/* Hidden Audio Element */}
-      <audio 
-        ref={audioRef}
-        src={currentSong?.audioUrl}
-        onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-        onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-        onEnded={nextSong}
-        onError={() => {
-          if (isPlaying) {
-            addToast("Error al reproducir esta canción. El archivo podría no estar disponible.", "error");
-            setIsPlaying(false);
-          }
-        }}
-      />
+      {currentSong?.audioUrl && (
+        <audio 
+          ref={audioRef}
+          key={currentSong.audioUrl}
+          src={currentSong.audioUrl}
+          onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+          onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+          onEnded={nextSong}
+        />
+      )}
 
       {/* Toast Notifications */}
       <div className="fixed top-6 right-6 z-[100] flex flex-col gap-3 pointer-events-none">
