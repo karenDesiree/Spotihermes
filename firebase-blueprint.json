@@ -1,25 +1,40 @@
 {
   "entities": {
-    "Song": {
-      "title": "Song",
-      "description": "A music track with metadata and file URLs",
+    "User": {
+      "title": "User",
+      "description": "User profile information",
       "type": "object",
       "properties": {
-        "title": { "type": "string", "description": "The title of the song" },
-        "artist": { "type": "string", "description": "The artist name" },
-        "coverUrl": { "type": "string", "description": "URL to the cover image" },
-        "audioUrl": { "type": "string", "description": "URL to the audio file" },
-        "lyrics": { "type": "string", "description": "Lyrics of the song" },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
-        "ownerId": { "type": "string", "description": "UID of the user who uploaded the song" }
+        "username": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "email": { "type": "string", "format": "email" }
       },
-      "required": ["title", "artist", "audioUrl", "createdAt"]
+      "required": ["username", "role", "email"]
+    },
+    "Song": {
+      "title": "Song",
+      "description": "Music track information",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "artist": { "type": "string" },
+        "coverUrl": { "type": "string" },
+        "audioUrl": { "type": "string" },
+        "lyrics": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "authorId": { "type": "string" }
+      },
+      "required": ["title", "artist", "audioUrl", "authorId"]
     }
   },
   "firestore": {
+    "users": {
+      "schema": "User",
+      "description": "Collection of user profiles"
+    },
     "songs": {
       "schema": "Song",
-      "description": "Collection of all songs"
+      "description": "Collection of uploaded songs"
     }
   }
 }

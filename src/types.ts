@@ -1,4 +1,5 @@
 export interface User {
+  // User profile
   username: string;
   role: 'admin' | 'user';
 }

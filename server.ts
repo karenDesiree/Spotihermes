@@ -6,6 +6,7 @@ import fs from "fs";
 import multer from "multer";
 
 const db = new Database("spotihermes.db");
+// Database initialized
 
 // Ensure uploads directory exists
 const uploadsDir = path.resolve("uploads");

@@ -20,6 +20,28 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { User, Song } from './types';
+import { auth, db, storage } from './firebase';
+import { 
+  signInWithEmailAndPassword, 
+  onAuthStateChanged, 
+  signOut,
+  createUserWithEmailAndPassword
+} from 'firebase/auth';
+import { 
+  collection, 
+  addDoc, 
+  getDocs, 
+  doc, 
+  updateDoc, 
+  deleteDoc, 
+  query, 
+  orderBy, 
+  onSnapshot,
+  setDoc,
+  getDoc,
+  getDocFromServer
+} from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 const PenguinIcon = ({ size = 24, className = "" }: { size?: number, className?: string }) => (
   <svg 
@@ -51,18 +73,17 @@ const PenguinIcon = ({ size = 24, className = "" }: { size?: number, className?:
 );
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem('spotihermes_user');
-    return saved ? JSON.parse(saved) : null;
-  });
+  // Spotihermes Main App
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [songs, setSongs] = useState<Song[]>([]);
-  const [currentSongId, setCurrentSongId] = useState<number | null>(null);
+  const [currentSongId, setCurrentSongId] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [showLyrics, setShowLyrics] = useState(false);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [editingSong, setEditingSong] = useState<Song | null>(null);
   const [view, setView] = useState<'library' | 'player'>('library');
-  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   
   const [toasts, setToasts] = useState<{ id: string, message: string, type: 'success' | 'error' | 'info' }[]>([]);
 
@@ -79,108 +100,224 @@ export default function App() {
   const [duration, setDuration] = useState(0);
 
   useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+        if (userDoc.exists()) {
+          setUser(userDoc.data() as User);
+        } else {
+          // Fallback for first time login or if doc missing
+          const newUser: User = {
+            username: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Usuario',
+            role: firebaseUser.email === 'hermesherasme@spotihermes.app' ? 'admin' : 'user'
+          };
+          await setDoc(doc(db, 'users', firebaseUser.uid), newUser);
+          setUser(newUser);
+        }
+      } else {
+        setUser(null);
+      }
+      setIsAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
     if (user) {
-      fetchSongs();
+      const q = query(collection(db, 'songs'), orderBy('createdAt', 'desc'));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const songsData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as unknown as Song[];
+        setSongs(songsData);
+        if (songsData.length > 0 && currentSongId === null) {
+          setCurrentSongId(songsData[0].id as any);
+        }
+      });
+      return () => unsubscribe();
     }
   }, [user]);
 
-  // Auto-switch to player view on mobile when playing starts
-  useEffect(() => {
-    if (isPlaying && window.innerWidth < 1024) {
-      setView('player');
-    }
-  }, [isPlaying]);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
 
-  const fetchSongs = async () => {
-    try {
-      const res = await fetch('/api/songs');
-      const data = await res.json();
-      console.log('Songs fetched:', data);
-      setSongs(data);
-      // Set initial song if none selected
-      if (data.length > 0 && currentSongId === null) {
-        setCurrentSongId(data[0].id);
+  // Test connection to Firestore
+  useEffect(() => {
+    const testConnection = async () => {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error: any) {
+        if (error.message?.includes('the client is offline')) {
+          addToast('Error: Firebase parece estar fuera de línea o mal configurado.', 'error');
+        }
       }
-    } catch (err) {
-      console.error('Error fetching songs:', err);
-    }
-  };
+    };
+    testConnection();
+  }, []);
 
   const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    setIsLoggingIn(true);
+    setLoginError(null);
+    
     const formData = new FormData(e.currentTarget);
-    const username = formData.get('username') as string;
+    const username = (formData.get('username') as string).trim().toLowerCase();
     const password = formData.get('password') as string;
 
-    try {
-      const res = await fetch('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setUser(data.user);
-        localStorage.setItem('spotihermes_user', JSON.stringify(data.user));
-        addToast(`¡Bienvenido, ${data.user.username}!`, 'success');
-      } else {
-        addToast(data.message, 'error');
+    // Hardcoded users check
+    const ALLOWED_USERS: Record<string, { pass: string, role: 'admin' | 'user' }> = {
+      'hermesherasme': { pass: 'herasmehermes18', role: 'admin' },
+      'karendesiree': { pass: '1132026', role: 'user' }
+    };
+
+    const allowedUser = ALLOWED_USERS[username];
+    if (!allowedUser || allowedUser.pass !== password) {
+      addToast('Usuario o contraseña incorrectos', 'error');
+      setIsLoggingIn(false);
+      return;
+    }
+
+    const email = `${username}@spotihermes.app`;
+
+    // Safety timeout to prevent infinite "loading" state
+    const timeoutId = setTimeout(() => {
+      if (isLoggingIn) {
+        setIsLoggingIn(false);
+        setLoginError('La conexión está tardando demasiado. ¿Has activado el login por correo en Firebase Console?');
       }
-    } catch (err) {
-      addToast('Error de conexión', 'error');
+    }, 12000);
+
+    try {
+      try {
+        console.log('Intentando iniciar sesión para:', email);
+        await signInWithEmailAndPassword(auth, email, password);
+      } catch (signInErr: any) {
+        console.log('Error en login inicial:', signInErr.code);
+        
+        if (signInErr.code === 'auth/operation-not-allowed') {
+          setLoginError('El inicio de sesión con correo está DESACTIVADO en Firebase Console. Debes activarlo en Authentication > Sign-in method.');
+          throw signInErr;
+        }
+
+        // If it's a "not found" or generic "invalid" error, try to create it
+        if (signInErr.code === 'auth/user-not-found' || signInErr.code === 'auth/invalid-credential' || signInErr.code === 'auth/invalid-login-credentials') {
+          try {
+            console.log('Intentando crear cuenta nueva...');
+            const userCred = await createUserWithEmailAndPassword(auth, email, password);
+            await setDoc(doc(db, 'users', userCred.user.uid), {
+              username: username,
+              role: allowedUser.role,
+              email: email
+            });
+          } catch (createErr: any) {
+            console.log('Error en creación:', createErr.code);
+            if (createErr.code === 'auth/email-already-in-use') {
+              setLoginError('La contraseña es incorrecta para este usuario.');
+            } else if (createErr.code === 'auth/operation-not-allowed') {
+              setLoginError('El inicio de sesión con correo está DESACTIVADO en Firebase Console.');
+            } else {
+              setLoginError('Error: ' + createErr.message);
+            }
+            throw createErr;
+          }
+        } else if (signInErr.code === 'auth/wrong-password') {
+          setLoginError('Contraseña incorrecta.');
+          throw signInErr;
+        } else {
+          throw signInErr;
+        }
+      }
+      addToast(`¡Bienvenido, ${username}!`, 'success');
+    } catch (err: any) {
+      console.error('Login error final:', err);
+      if (!loginError) {
+        addToast('Error: ' + (err.code || 'Error de conexión'), 'error');
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      setIsLoggingIn(false);
     }
   };
 
-  const handleLogout = () => {
-    setUser(null);
-    localStorage.removeItem('spotihermes_user');
-    setIsPlaying(false);
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setIsPlaying(false);
+      addToast('Sesión cerrada', 'info');
+    } catch (err) {
+      addToast('Error al cerrar sesión', 'error');
+    }
   };
 
   const [isUploading, setIsUploading] = useState(false);
 
   const handleUpload = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (!auth.currentUser) return;
+    
     setIsUploading(true);
     const formData = new FormData(e.currentTarget);
-    const url = editingSong ? `/api/songs/${editingSong.id}` : '/api/songs';
-    const method = editingSong ? 'PUT' : 'POST';
+    const title = formData.get('title') as string;
+    const artist = formData.get('artist') as string;
+    const lyrics = formData.get('lyrics') as string;
+    const audioFile = formData.get('audio') as File;
+    const coverFile = formData.get('cover') as File;
 
     try {
-      const res = await fetch(url, {
-        method,
-        body: formData,
-      });
-      
-      if (res.ok) {
-        await fetchSongs();
-        setIsAdminModalOpen(false);
-        setEditingSong(null);
-        addToast(editingSong ? 'Canción actualizada' : 'Canción subida con éxito', 'success');
-      } else {
-        const errorData = await res.json();
-        addToast(errorData.error || 'No se pudo subir la canción', 'error');
+      let audioUrl = editingSong?.audioUrl || '';
+      let coverUrl = editingSong?.coverUrl || '';
+
+      if (audioFile && audioFile.size > 0) {
+        const audioRef = ref(storage, `songs/${Date.now()}-${audioFile.name}`);
+        await uploadBytes(audioRef, audioFile);
+        audioUrl = await getDownloadURL(audioRef);
       }
+
+      if (coverFile && coverFile.size > 0) {
+        const coverRef = ref(storage, `covers/${Date.now()}-${coverFile.name}`);
+        await uploadBytes(coverRef, coverFile);
+        coverUrl = await getDownloadURL(coverRef);
+      }
+
+      if (editingSong) {
+        await updateDoc(doc(db, 'songs', editingSong.id as any), {
+          title,
+          artist,
+          lyrics,
+          audioUrl,
+          coverUrl
+        });
+      } else {
+        await addDoc(collection(db, 'songs'), {
+          title,
+          artist,
+          lyrics,
+          audioUrl,
+          coverUrl,
+          authorId: auth.currentUser.uid,
+          createdAt: new Date().toISOString()
+        });
+      }
+
+      setIsAdminModalOpen(false);
+      setEditingSong(null);
+      addToast(editingSong ? 'Canción actualizada' : 'Canción subida con éxito', 'success');
     } catch (err) {
-      console.error('Error uploading song:', err);
-      addToast('Error de conexión al intentar subir la canción', 'error');
+      console.error('Error uploading to Firebase:', err);
+      addToast('Error al procesar la canción en la nube', 'error');
     } finally {
       setIsUploading(false);
     }
   };
 
-  const deleteSong = async (id: number) => {
+  const deleteSong = async (id: string) => {
     try {
-      const res = await fetch(`/api/songs/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        addToast('Canción eliminada', 'success');
-        fetchSongs();
-      } else {
-        addToast('Error al eliminar la canción', 'error');
-      }
+      await deleteDoc(doc(db, 'songs', id));
+      addToast('Canción eliminada', 'success');
     } catch (err) {
       console.error('Error deleting song:', err);
-      addToast('Error de conexión', 'error');
+      addToast('Error al eliminar la canción', 'error');
     } finally {
       setDeleteConfirmId(null);
     }
@@ -197,7 +334,7 @@ export default function App() {
     }
   };
 
-  const playSong = (id: number) => {
+  const playSong = (id: string) => {
     setCurrentSongId(id);
     setIsPlaying(true);
     setTimeout(() => {
@@ -222,6 +359,17 @@ export default function App() {
   const currentSong = songs.find(s => s.id === currentSongId) || songs[0];
   const currentSongIndex = songs.findIndex(s => s.id === currentSongId);
 
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-[#0a0502] flex items-center justify-center text-white">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-red-600 border-t-transparent rounded-full animate-spin" />
+          <p className="text-xs font-bold uppercase tracking-widest text-white/40">Cargando Spotihermes...</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!user) {
     return (
       <div className="min-h-screen bg-[#0a0502] flex items-center justify-center p-6 font-sans text-white">
@@ -241,6 +389,19 @@ export default function App() {
             <h1 className="text-4xl font-black tracking-tighter">Spotihermes</h1>
             <p className="text-white/40 text-sm mt-3 font-medium">Tu música, tu espacio</p>
           </div>
+
+          {loginError && (
+            <motion.div 
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-400 text-xs font-bold leading-relaxed"
+            >
+              <div className="flex gap-2">
+                <AlertCircle size={16} className="shrink-0" />
+                <p>{loginError}</p>
+              </div>
+            </motion.div>
+          )}
           
           <form onSubmit={handleLogin} className="space-y-5">
             <div className="space-y-2">
@@ -265,9 +426,17 @@ export default function App() {
             </div>
             <button 
               type="submit"
-              className="w-full bg-white text-black font-black py-5 rounded-2xl transition-all transform hover:scale-[1.02] active:scale-[0.95] shadow-xl mt-4"
+              disabled={isLoggingIn}
+              className="w-full bg-white text-black font-black py-5 rounded-2xl transition-all transform hover:scale-[1.02] active:scale-[0.95] shadow-xl mt-4 flex items-center justify-center gap-2"
             >
-              ENTRAR
+              {isLoggingIn ? (
+                <>
+                  <div className="w-5 h-5 border-2 border-black/20 border-t-black rounded-full animate-spin" />
+                  ENTRANDO...
+                </>
+              ) : (
+                'ENTRAR'
+              )}
             </button>
           </form>
         </motion.div>
