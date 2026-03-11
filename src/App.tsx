@@ -81,6 +81,8 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [showLyrics, setShowLyrics] = useState(false);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
+  const [cloudinaryConfigured, setCloudinaryConfigured] = useState<boolean | null>(null);
+  const [cloudinaryStatus, setCloudinaryStatus] = useState<string>('unknown');
   const [editingSong, setEditingSong] = useState<Song | null>(null);
   const [view, setView] = useState<'library' | 'player'>('library');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -98,6 +100,21 @@ export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('/api/health');
+        const data = await res.json();
+        setCloudinaryConfigured(data.cloudinaryConfigured);
+        setCloudinaryStatus(data.cloudinaryStatus);
+      } catch (err) {
+        setCloudinaryConfigured(false);
+        setCloudinaryStatus('error: connection failed');
+      }
+    };
+    checkHealth();
+  }, [isAdminModalOpen]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -155,6 +172,10 @@ export default function App() {
       refreshSongs();
     }
   }, [user]);
+
+  useEffect(() => {
+    console.log('Estado de canciones actualizado:', songs.length);
+  }, [songs]);
 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -228,6 +249,7 @@ export default function App() {
               role: allowedUser.role,
               email: email
             });
+            sessionStorage.setItem('spotihermes_session', 'true');
           } catch (createErr: any) {
             console.log('Error en creación:', createErr.code);
             if (createErr.code === 'auth/email-already-in-use') {
@@ -291,7 +313,11 @@ export default function App() {
       });
 
       if (!response.ok) {
-        throw new Error('Error en la respuesta del servidor');
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.hint 
+          ? `${errorData.error}: ${errorData.hint}`
+          : (errorData.error || errorData.message || 'Error en la respuesta del servidor');
+        throw new Error(errorMessage);
       }
 
       await refreshSongs();
@@ -301,7 +327,7 @@ export default function App() {
       addToast(editingSong ? 'Canción actualizada' : '¡Canción subida con éxito!', 'success');
     } catch (err: any) {
       console.error('Error detallado de subida:', err);
-      addToast('Error al procesar la canción en el servidor local', 'error');
+      addToast(err.message || 'Error al procesar la canción en el servidor local', 'error');
     } finally {
       setIsUploading(false);
     }
@@ -391,6 +417,11 @@ export default function App() {
             </motion.div>
             <h1 className="text-4xl font-black tracking-tighter">Spotihermes</h1>
             <p className="text-white/40 text-sm mt-3 font-medium">Tu música, tu espacio</p>
+            <div className="mt-4 px-3 py-1 bg-white/5 rounded-full border border-white/10">
+              <p className="text-[8px] font-mono text-white/20 uppercase tracking-tighter">
+                Entorno: {window.location.hostname.includes('vercel.app') ? 'VERCEL (SIN BACKEND)' : 'AI STUDIO (LISTO)'}
+              </p>
+            </div>
           </div>
 
           {loginError && (
@@ -847,6 +878,30 @@ export default function App() {
                   <X size={20} />
                 </button>
               </div>
+
+              {cloudinaryConfigured === false || cloudinaryStatus !== 'connected' ? (
+                <div className="mx-8 mt-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-start gap-3">
+                  <AlertCircle className="text-red-500 shrink-0 mt-0.5" size={18} />
+                  <div className="text-sm">
+                    <p className="text-red-500 font-bold mb-1">
+                      {cloudinaryStatus === 'connected' ? 'Cloudinary no configurado' : 'Error de conexión con Cloudinary'}
+                    </p>
+                    <p className="text-white/60 leading-relaxed">
+                      {cloudinaryStatus === 'connected' 
+                        ? 'Las subidas fallarán. Por favor, configura las variables de entorno en los ajustes de AI Studio.'
+                        : `Estado: ${cloudinaryStatus}. Verifica tus credenciales en los ajustes.`}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="mx-8 mt-6 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl flex items-start gap-3">
+                  <CheckCircle2 className="text-emerald-500 shrink-0 mt-0.5" size={18} />
+                  <div className="text-sm">
+                    <p className="text-emerald-500 font-bold mb-1">Cloudinary Conectado</p>
+                    <p className="text-white/60 leading-relaxed">Listo para subir archivos.</p>
+                  </div>
+                </div>
+              )}
               
               <form onSubmit={handleUpload} className="p-8 space-y-6 max-h-[70vh] overflow-y-auto custom-scrollbar">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import Database from "better-sqlite3";
@@ -6,6 +7,7 @@ import fs from "fs";
 import multer from "multer";
 import { v2 as cloudinary } from "cloudinary";
 import { CloudinaryStorage } from "multer-storage-cloudinary";
+import util from "util";
 
 const db = new Database("spotihermes.db");
 
@@ -34,34 +36,83 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/api/health", (req, res) => {
+app.get("/api/health", async (req, res) => {
+  let cloudinaryStatus = "unknown";
+  try {
+    const result = await cloudinary.api.ping();
+    cloudinaryStatus = result.status === "ok" ? "connected" : "error";
+  } catch (err: any) {
+    cloudinaryStatus = `error: ${err.message}`;
+  }
+
   res.json({ 
     status: "ok", 
-    cloudinaryConfigured: !!process.env.CLOUDINARY_CLOUD_NAME 
+    cloudinaryConfigured: !!process.env.CLOUDINARY_CLOUD_NAME,
+    cloudinaryStatus
   });
 });
 
 // Configure Cloudinary
+console.log("Configurando Cloudinary con:", {
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY ? "PRESENT" : "MISSING",
+  api_secret: process.env.CLOUDINARY_API_SECRET ? "PRESENT" : "MISSING",
+});
+
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+  console.warn("⚠️ WARNING: Cloudinary credentials are not fully configured. Uploads will fail.");
+}
+
 // Setup multer with Cloudinary storage
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: async (req, file) => {
-    const isAudio = file.mimetype.startsWith('audio/');
-    return {
-      folder: isAudio ? 'spotihermes/audio' : 'spotihermes/covers',
-      resource_type: isAudio ? 'video' : 'image', // Cloudinary uses 'video' for audio files
-      public_id: Date.now() + "-" + path.parse(file.originalname).name,
-    };
+    try {
+      console.log("--- INICIO PARAMS CLOUDINARY ---");
+      console.log("Archivo recibido:", {
+        originalname: file.originalname,
+        mimetype: file.mimetype,
+        fieldname: file.fieldname
+      });
+      
+      const isAudio = file.mimetype.startsWith('audio/') || file.fieldname === 'audio';
+      const folder = isAudio ? 'spotihermes/audio' : 'spotihermes/covers';
+      
+      // Clean filename for public_id
+      const cleanName = path.parse(file.originalname).name
+        .replace(/[^a-zA-Z0-9]/g, '_')
+        .substring(0, 50);
+      
+      const params: any = {
+        folder: folder,
+        resource_type: 'auto',
+        public_id: `${Date.now()}-${cleanName}`,
+      };
+      
+      console.log("Cloudinary params generados:", params);
+      return params;
+    } catch (err) {
+      console.error("Error crítico en params de CloudinaryStorage:", err);
+      throw err;
+    }
   },
 });
 
-const upload = multer({ storage });
+const upload = multer({ 
+  storage,
+  limits: {
+    fileSize: 20 * 1024 * 1024, // 20MB limit
+  }
+});
+
+// Use upload.any() to be more flexible with field names
+const uploadMiddleware = upload.any();
 
 // Serve uploads statically
 app.use("/uploads", express.static("uploads"));
@@ -95,14 +146,35 @@ app.get("/api/songs", (req, res) => {
   res.json(formattedSongs);
 });
 
-app.post("/api/songs", upload.fields([{ name: "audio" }, { name: "cover" }]), (req, res) => {
+app.post("/api/songs", (req, res, next) => {
+  console.log("Recibida petición POST en /api/songs");
+  uploadMiddleware(req, res, (err) => {
+    if (err) {
+      console.error("--- ERROR EN MULTER/CLOUDINARY ---");
+      console.error(util.inspect(err, { showHidden: true, depth: null, colors: true }));
+      
+      return res.status(500).json({ 
+        error: "Error al subir archivos a Cloudinary", 
+        details: err.message || "Error desconocido en Multer/Cloudinary",
+        fullError: JSON.parse(JSON.stringify(err, Object.getOwnPropertyNames(err))),
+        hint: "Verifica que CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY y CLOUDINARY_API_SECRET estén configurados en los ajustes."
+      });
+    }
+    console.log("Archivos subidos con éxito:", req.files);
+    next();
+  });
+}, (req, res) => {
   try {
-    console.log("POST /api/songs - Recibido");
+    console.log("POST /api/songs - Procesando datos");
+    console.log("Body recibido:", req.body);
     const { title, artist, lyrics, authorId } = req.body;
-    const files = req.files as any;
+    const files = req.files as any[];
     
-    const audioUrl = files.audio ? files.audio[0].path : null;
-    const coverUrl = files.cover ? files.cover[0].path : null;
+    const audioFile = files.find(f => f.fieldname === 'audio');
+    const coverFile = files.find(f => f.fieldname === 'cover');
+    
+    const audioUrl = audioFile ? audioFile.path : null;
+    const coverUrl = coverFile ? coverFile.path : null;
 
     console.log("Datos:", { title, artist, audioUrl, coverUrl });
 
@@ -121,21 +193,35 @@ app.post("/api/songs", upload.fields([{ name: "audio" }, { name: "cover" }]), (r
     res.json({ id: newId.toString(), title, artist, coverUrl, audioUrl, lyrics, authorId });
   } catch (err) {
     console.error("Error in POST /api/songs:", err);
-    res.status(500).json({ error: "Error al guardar la canción" });
+    res.status(500).json({ error: "Error al guardar la canción en la base de datos" });
   }
 });
 
-app.put("/api/songs/:id", upload.fields([{ name: "audio" }, { name: "cover" }]), (req, res) => {
+app.put("/api/songs/:id", (req, res, next) => {
+  uploadMiddleware(req, res, (err) => {
+    if (err) {
+      console.error("Multer/Cloudinary Error during PUT:", err);
+      return res.status(500).json({ 
+        error: "Error al subir archivos a Cloudinary", 
+        details: err.message 
+      });
+    }
+    next();
+  });
+}, (req, res) => {
   try {
     const { id } = req.params;
     const { title, artist, lyrics } = req.body;
-    const files = req.files as any;
+    const files = req.files as any[];
 
     const currentSong = db.prepare("SELECT * FROM songs WHERE id = ?").get(id) as any;
     if (!currentSong) return res.status(404).json({ error: "Song not found" });
 
-    const audioUrl = files.audio ? files.audio[0].path : currentSong.audioUrl;
-    const coverUrl = files.cover ? files.cover[0].path : currentSong.coverUrl;
+    const audioFile = files.find(f => f.fieldname === 'audio');
+    const coverFile = files.find(f => f.fieldname === 'cover');
+
+    const audioUrl = audioFile ? audioFile.path : currentSong.audioUrl;
+    const coverUrl = coverFile ? coverFile.path : currentSong.coverUrl;
 
     db.prepare(
       "UPDATE songs SET title = ?, artist = ?, coverUrl = ?, audioUrl = ?, lyrics = ? WHERE id = ?"
@@ -155,11 +241,14 @@ app.delete("/api/songs/:id", (req, res) => {
 });
 
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
+  const vite = process.env.NODE_ENV !== "production" 
+    ? await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      })
+    : null;
+
+  if (vite) {
     app.use(vite.middlewares);
   } else {
     app.use(express.static("dist"));
@@ -170,6 +259,13 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Cloudinary Cloud Name: ${process.env.CLOUDINARY_CLOUD_NAME || 'Not set'}`);
+  });
+
+  // Global error handler
+  app.use((err: any, req: any, res: any, next: any) => {
+    console.error("Unhandled Error:", err);
+    res.status(500).json({ error: "Internal Server Error", message: err.message });
   });
 }
 
