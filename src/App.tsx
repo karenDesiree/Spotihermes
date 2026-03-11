@@ -102,6 +102,15 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
+        // Force login screen on fresh session if requested
+        const hasSession = sessionStorage.getItem('spotihermes_session');
+        if (!hasSession) {
+          await signOut(auth);
+          setUser(null);
+          setIsAuthLoading(false);
+          return;
+        }
+
         const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
         if (userDoc.exists()) {
           setUser(userDoc.data() as User);
@@ -124,13 +133,17 @@ export default function App() {
 
   const refreshSongs = async () => {
     try {
+      console.log('Refrescando canciones...');
       const response = await fetch('/api/songs');
       if (response.ok) {
         const data = await response.json();
+        console.log('Canciones recibidas:', data.length);
         setSongs(data);
         if (data.length > 0 && currentSongId === null) {
           setCurrentSongId(data[0].id);
         }
+      } else {
+        console.error('Error al obtener canciones:', response.status);
       }
     } catch (err) {
       console.error('Error refreshing songs:', err);
@@ -196,6 +209,7 @@ export default function App() {
       try {
         console.log('Intentando iniciar sesión para:', email);
         await signInWithEmailAndPassword(auth, email, password);
+        sessionStorage.setItem('spotihermes_session', 'true');
       } catch (signInErr: any) {
         console.log('Error en login inicial:', signInErr.code);
         
@@ -246,6 +260,7 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
+      sessionStorage.removeItem('spotihermes_session');
       await signOut(auth);
       setIsPlaying(false);
       addToast('Sesión cerrada', 'info');
@@ -280,6 +295,7 @@ export default function App() {
       }
 
       await refreshSongs();
+      setView('library');
       setIsAdminModalOpen(false);
       setEditingSong(null);
       addToast(editingSong ? 'Canción actualizada' : '¡Canción subida con éxito!', 'success');

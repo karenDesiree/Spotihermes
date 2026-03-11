@@ -28,6 +28,19 @@ const PORT = 3000;
 
 app.use(express.json());
 
+// Debug middleware
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.url}`);
+  next();
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({ 
+    status: "ok", 
+    cloudinaryConfigured: !!process.env.CLOUDINARY_CLOUD_NAME 
+  });
+});
+
 // Configure Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -84,19 +97,25 @@ app.get("/api/songs", (req, res) => {
 
 app.post("/api/songs", upload.fields([{ name: "audio" }, { name: "cover" }]), (req, res) => {
   try {
+    console.log("POST /api/songs - Recibido");
     const { title, artist, lyrics, authorId } = req.body;
     const files = req.files as any;
     
     const audioUrl = files.audio ? files.audio[0].path : null;
     const coverUrl = files.cover ? files.cover[0].path : null;
 
+    console.log("Datos:", { title, artist, audioUrl, coverUrl });
+
     if (!audioUrl) {
+      console.error("Error: No hay archivo de audio");
       return res.status(400).json({ error: "Audio file is required" });
     }
 
     const info = db.prepare(
       "INSERT INTO songs (title, artist, coverUrl, audioUrl, lyrics, authorId) VALUES (?, ?, ?, ?, ?, ?)"
     ).run(title, artist, coverUrl, audioUrl, lyrics, authorId);
+
+    console.log("Canción insertada con ID:", info.lastInsertRowid);
 
     const newId = Number(info.lastInsertRowid);
     res.json({ id: newId.toString(), title, artist, coverUrl, audioUrl, lyrics, authorId });
