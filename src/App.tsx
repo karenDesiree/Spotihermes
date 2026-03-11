@@ -122,20 +122,24 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  const refreshSongs = async () => {
+    try {
+      const response = await fetch('/api/songs');
+      if (response.ok) {
+        const data = await response.json();
+        setSongs(data);
+        if (data.length > 0 && currentSongId === null) {
+          setCurrentSongId(data[0].id);
+        }
+      }
+    } catch (err) {
+      console.error('Error refreshing songs:', err);
+    }
+  };
+
   useEffect(() => {
     if (user) {
-      const q = query(collection(db, 'songs'), orderBy('createdAt', 'desc'));
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const songsData = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as unknown as Song[];
-        setSongs(songsData);
-        if (songsData.length > 0 && currentSongId === null) {
-          setCurrentSongId(songsData[0].id as any);
-        }
-      });
-      return () => unsubscribe();
+      refreshSongs();
     }
   }, [user]);
 
@@ -258,54 +262,30 @@ export default function App() {
     
     setIsUploading(true);
     const formData = new FormData(e.currentTarget);
-    const title = formData.get('title') as string;
-    const artist = formData.get('artist') as string;
-    const lyrics = formData.get('lyrics') as string;
-    const audioFile = formData.get('audio') as File;
-    const coverFile = formData.get('cover') as File;
+    formData.append('authorId', auth.currentUser.uid);
 
     try {
-      let audioUrl = editingSong?.audioUrl || '';
-      let coverUrl = editingSong?.coverUrl || '';
+      const url = editingSong ? `/api/songs/${editingSong.id}` : '/api/songs';
+      const method = editingSong ? 'PUT' : 'POST';
 
-      if (audioFile && audioFile.size > 0) {
-        const audioRef = ref(storage, `songs/${Date.now()}-${audioFile.name}`);
-        await uploadBytes(audioRef, audioFile);
-        audioUrl = await getDownloadURL(audioRef);
+      addToast(editingSong ? 'Actualizando canción...' : 'Subiendo canción...', 'info');
+
+      const response = await fetch(url, {
+        method,
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error('Error en la respuesta del servidor');
       }
 
-      if (coverFile && coverFile.size > 0) {
-        const coverRef = ref(storage, `covers/${Date.now()}-${coverFile.name}`);
-        await uploadBytes(coverRef, coverFile);
-        coverUrl = await getDownloadURL(coverRef);
-      }
-
-      if (editingSong) {
-        await updateDoc(doc(db, 'songs', editingSong.id as any), {
-          title,
-          artist,
-          lyrics,
-          audioUrl,
-          coverUrl
-        });
-      } else {
-        await addDoc(collection(db, 'songs'), {
-          title,
-          artist,
-          lyrics,
-          audioUrl,
-          coverUrl,
-          authorId: auth.currentUser.uid,
-          createdAt: new Date().toISOString()
-        });
-      }
-
+      await refreshSongs();
       setIsAdminModalOpen(false);
       setEditingSong(null);
-      addToast(editingSong ? 'Canción actualizada' : 'Canción subida con éxito', 'success');
-    } catch (err) {
-      console.error('Error uploading to Firebase:', err);
-      addToast('Error al procesar la canción en la nube', 'error');
+      addToast(editingSong ? 'Canción actualizada' : '¡Canción subida con éxito!', 'success');
+    } catch (err: any) {
+      console.error('Error detallado de subida:', err);
+      addToast('Error al procesar la canción en el servidor local', 'error');
     } finally {
       setIsUploading(false);
     }
@@ -313,8 +293,15 @@ export default function App() {
 
   const deleteSong = async (id: string) => {
     try {
-      await deleteDoc(doc(db, 'songs', id));
-      addToast('Canción eliminada', 'success');
+      const response = await fetch(`/api/songs/${id}`, {
+        method: 'DELETE',
+      });
+      if (response.ok) {
+        await refreshSongs();
+        addToast('Canción eliminada', 'success');
+      } else {
+        throw new Error('Error al eliminar');
+      }
     } catch (err) {
       console.error('Error deleting song:', err);
       addToast('Error al eliminar la canción', 'error');

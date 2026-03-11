@@ -4,23 +4,10 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import multer from "multer";
+import { v2 as cloudinary } from "cloudinary";
+import { CloudinaryStorage } from "multer-storage-cloudinary";
 
 const db = new Database("spotihermes.db");
-// Database initialized
-
-// Ensure uploads directory exists
-const uploadsDir = path.resolve("uploads");
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
 
 // Initialize database
 db.exec(`
@@ -31,6 +18,7 @@ db.exec(`
     coverUrl TEXT,
     audioUrl TEXT NOT NULL,
     lyrics TEXT,
+    authorId TEXT,
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `);
@@ -40,19 +28,26 @@ const PORT = 3000;
 
 app.use(express.json());
 
-// Setup multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = "./uploads";
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir);
-    }
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + "-" + file.originalname);
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// Setup multer with Cloudinary storage
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: async (req, file) => {
+    const isAudio = file.mimetype.startsWith('audio/');
+    return {
+      folder: isAudio ? 'spotihermes/audio' : 'spotihermes/covers',
+      resource_type: isAudio ? 'video' : 'image', // Cloudinary uses 'video' for audio files
+      public_id: Date.now() + "-" + path.parse(file.originalname).name,
+    };
   },
 });
+
 const upload = multer({ storage });
 
 // Serve uploads statically
@@ -80,29 +75,31 @@ app.post("/api/login", (req, res) => {
 
 app.get("/api/songs", (req, res) => {
   const songs = db.prepare("SELECT * FROM songs ORDER BY id ASC").all();
-  res.json(songs);
+  const formattedSongs = songs.map((s: any) => ({
+    ...s,
+    id: s.id.toString()
+  }));
+  res.json(formattedSongs);
 });
 
 app.post("/api/songs", upload.fields([{ name: "audio" }, { name: "cover" }]), (req, res) => {
   try {
-    console.log("POST /api/songs - Body:", req.body);
-    console.log("POST /api/songs - Files:", req.files);
-    const { title, artist, lyrics } = req.body;
-    const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+    const { title, artist, lyrics, authorId } = req.body;
+    const files = req.files as any;
     
-    const audioUrl = files.audio ? `/uploads/${files.audio[0].filename}` : null;
-    const coverUrl = files.cover ? `/uploads/${files.cover[0].filename}` : null;
+    const audioUrl = files.audio ? files.audio[0].path : null;
+    const coverUrl = files.cover ? files.cover[0].path : null;
 
     if (!audioUrl) {
       return res.status(400).json({ error: "Audio file is required" });
     }
 
     const info = db.prepare(
-      "INSERT INTO songs (title, artist, coverUrl, audioUrl, lyrics) VALUES (?, ?, ?, ?, ?)"
-    ).run(title, artist, coverUrl, audioUrl, lyrics);
+      "INSERT INTO songs (title, artist, coverUrl, audioUrl, lyrics, authorId) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(title, artist, coverUrl, audioUrl, lyrics, authorId);
 
     const newId = Number(info.lastInsertRowid);
-    res.json({ id: newId, title, artist, coverUrl, audioUrl, lyrics });
+    res.json({ id: newId.toString(), title, artist, coverUrl, audioUrl, lyrics, authorId });
   } catch (err) {
     console.error("Error in POST /api/songs:", err);
     res.status(500).json({ error: "Error al guardar la canción" });
@@ -113,19 +110,19 @@ app.put("/api/songs/:id", upload.fields([{ name: "audio" }, { name: "cover" }]),
   try {
     const { id } = req.params;
     const { title, artist, lyrics } = req.body;
-    const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+    const files = req.files as any;
 
     const currentSong = db.prepare("SELECT * FROM songs WHERE id = ?").get(id) as any;
     if (!currentSong) return res.status(404).json({ error: "Song not found" });
 
-    const audioUrl = files.audio ? `/uploads/${files.audio[0].filename}` : currentSong.audioUrl;
-    const coverUrl = files.cover ? `/uploads/${files.cover[0].filename}` : currentSong.coverUrl;
+    const audioUrl = files.audio ? files.audio[0].path : currentSong.audioUrl;
+    const coverUrl = files.cover ? files.cover[0].path : currentSong.coverUrl;
 
     db.prepare(
       "UPDATE songs SET title = ?, artist = ?, coverUrl = ?, audioUrl = ?, lyrics = ? WHERE id = ?"
     ).run(title, artist, coverUrl, audioUrl, lyrics, id);
 
-    res.json({ id, title, artist, coverUrl, audioUrl, lyrics });
+    res.json({ id: id.toString(), title, artist, coverUrl, audioUrl, lyrics });
   } catch (err) {
     console.error("Error in PUT /api/songs:", err);
     res.status(500).json({ error: "Error al actualizar la canción" });
