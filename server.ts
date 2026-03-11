@@ -7,6 +7,7 @@ import fs from "fs";
 import multer from "multer";
 import { v2 as cloudinary } from "cloudinary";
 import { CloudinaryStorage } from "multer-storage-cloudinary";
+import util from "util";
 
 const db = new Database("spotihermes.db");
 
@@ -73,24 +74,45 @@ const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: async (req, file) => {
     try {
-      console.log("Preparando subida para archivo:", file.originalname, "mimetype:", file.mimetype);
-      const isAudio = file.mimetype.startsWith('audio/');
-      const params = {
-        folder: isAudio ? 'spotihermes/audio' : 'spotihermes/covers',
-        resource_type: 'auto', // Let Cloudinary decide
-        public_id: Date.now() + "-" + path.parse(file.originalname).name.replace(/[^a-zA-Z0-9]/g, '_'),
+      console.log("--- INICIO PARAMS CLOUDINARY ---");
+      console.log("Archivo recibido:", {
+        originalname: file.originalname,
+        mimetype: file.mimetype,
+        fieldname: file.fieldname
+      });
+      
+      const isAudio = file.mimetype.startsWith('audio/') || file.fieldname === 'audio';
+      const folder = isAudio ? 'spotihermes/audio' : 'spotihermes/covers';
+      
+      // Clean filename for public_id
+      const cleanName = path.parse(file.originalname).name
+        .replace(/[^a-zA-Z0-9]/g, '_')
+        .substring(0, 50);
+      
+      const params: any = {
+        folder: folder,
+        resource_type: 'auto',
+        public_id: `${Date.now()}-${cleanName}`,
       };
-      console.log("Cloudinary params:", params);
+      
+      console.log("Cloudinary params generados:", params);
       return params;
     } catch (err) {
-      console.error("Error en params de CloudinaryStorage:", err);
+      console.error("Error crítico en params de CloudinaryStorage:", err);
       throw err;
     }
   },
 });
 
-const upload = multer({ storage });
-const uploadMiddleware = upload.fields([{ name: "audio" }, { name: "cover" }]);
+const upload = multer({ 
+  storage,
+  limits: {
+    fileSize: 20 * 1024 * 1024, // 20MB limit
+  }
+});
+
+// Use upload.any() to be more flexible with field names
+const uploadMiddleware = upload.any();
 
 // Serve uploads statically
 app.use("/uploads", express.static("uploads"));
@@ -125,16 +147,20 @@ app.get("/api/songs", (req, res) => {
 });
 
 app.post("/api/songs", (req, res, next) => {
+  console.log("Recibida petición POST en /api/songs");
   uploadMiddleware(req, res, (err) => {
     if (err) {
-      console.error("Multer/Cloudinary Error during POST:", err);
+      console.error("--- ERROR EN MULTER/CLOUDINARY ---");
+      console.error(util.inspect(err, { showHidden: true, depth: null, colors: true }));
+      
       return res.status(500).json({ 
         error: "Error al subir archivos a Cloudinary", 
         details: err.message || "Error desconocido en Multer/Cloudinary",
-        fullError: process.env.NODE_ENV === 'development' ? err : undefined,
+        fullError: JSON.parse(JSON.stringify(err, Object.getOwnPropertyNames(err))),
         hint: "Verifica que CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY y CLOUDINARY_API_SECRET estén configurados en los ajustes."
       });
     }
+    console.log("Archivos subidos con éxito:", req.files);
     next();
   });
 }, (req, res) => {
@@ -142,10 +168,13 @@ app.post("/api/songs", (req, res, next) => {
     console.log("POST /api/songs - Procesando datos");
     console.log("Body recibido:", req.body);
     const { title, artist, lyrics, authorId } = req.body;
-    const files = req.files as any;
+    const files = req.files as any[];
     
-    const audioUrl = files.audio ? files.audio[0].path : null;
-    const coverUrl = files.cover ? files.cover[0].path : null;
+    const audioFile = files.find(f => f.fieldname === 'audio');
+    const coverFile = files.find(f => f.fieldname === 'cover');
+    
+    const audioUrl = audioFile ? audioFile.path : null;
+    const coverUrl = coverFile ? coverFile.path : null;
 
     console.log("Datos:", { title, artist, audioUrl, coverUrl });
 
@@ -183,13 +212,16 @@ app.put("/api/songs/:id", (req, res, next) => {
   try {
     const { id } = req.params;
     const { title, artist, lyrics } = req.body;
-    const files = req.files as any;
+    const files = req.files as any[];
 
     const currentSong = db.prepare("SELECT * FROM songs WHERE id = ?").get(id) as any;
     if (!currentSong) return res.status(404).json({ error: "Song not found" });
 
-    const audioUrl = files.audio ? files.audio[0].path : currentSong.audioUrl;
-    const coverUrl = files.cover ? files.cover[0].path : currentSong.coverUrl;
+    const audioFile = files.find(f => f.fieldname === 'audio');
+    const coverFile = files.find(f => f.fieldname === 'cover');
+
+    const audioUrl = audioFile ? audioFile.path : currentSong.audioUrl;
+    const coverUrl = coverFile ? coverFile.path : currentSong.coverUrl;
 
     db.prepare(
       "UPDATE songs SET title = ?, artist = ?, coverUrl = ?, audioUrl = ?, lyrics = ? WHERE id = ?"
